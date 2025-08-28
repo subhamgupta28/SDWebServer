@@ -5,7 +5,7 @@
 #include "sdmmc_cmd.h"
 #include "driver/sdmmc_host.h"
 #include "driver/gpio.h"
-
+#include <dirent.h>
 #include <sys/stat.h> // mkdir
 #include <stdio.h>
 #include <string.h>
@@ -36,7 +36,7 @@
 
   <div class="row">
     <form id="uploadForm" method="POST" action="/upload" enctype="multipart/form-data">
-      <input type="file" name="upload" required>
+      <input type="file" name="upload" multiple required>
       <select id="folderSelect" name="dir" class="mono"></select>
       <input type="submit" value="Upload">
     </form>
@@ -112,6 +112,20 @@
             if (child) child.classList.toggle('hidden');
           };
           li.appendChild(span);
+
+          // 🆕 Delete button for folders
+          const btn = document.createElement('button');
+          btn.textContent = "Delete";
+          btn.onclick = async (e) => {
+            e.preventDefault();
+            if (confirm("Delete folder " + item.path + " and all its contents?")) {
+              await fetch('/delete?file=' + encodeURIComponent(item.path));
+              loadAll();
+            }
+          };
+          li.appendChild(document.createTextNode(" "));
+          li.appendChild(btn);
+
           if (item.children && item.children.length) {
             const child = renderTree(item.children);
             child.classList.add('hidden'); // collapsed by default
@@ -186,4 +200,5 @@ private:
     void initRoutes();
     String listFilesRecursive(const String &fatDir, const String &vfsDir, uint8_t levels);
     bool deleteRecursive(const char *path);
+    bool deleteRecursiveOld(const char *path);
 };

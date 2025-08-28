@@ -132,8 +132,36 @@ String SDWebServer::listFilesRecursive(const String &fatDir, const String &vfsDi
     json += "]";
     return json;
 }
-
 bool SDWebServer::deleteRecursive(const char *path)
+{
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        return false; // not found
+    }
+
+    if (S_ISDIR(st.st_mode)) {
+        DIR *dir = opendir(path);
+        if (!dir) return false;
+
+        struct dirent *de;
+        while ((de = readdir(dir)) != NULL) {
+            if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+                continue;
+
+            String childPath = String(path) + "/" + de->d_name;
+            if (!deleteRecursive(childPath.c_str())) {
+                closedir(dir);
+                return false;
+            }
+        }
+        closedir(dir);
+        return (rmdir(path) == 0);
+    } else {
+        return (remove(path) == 0);
+    }
+}
+
+bool SDWebServer::deleteRecursiveOld(const char *path)
 {
     FILINFO fno;
     FRESULT res;
@@ -156,8 +184,8 @@ bool SDWebServer::deleteRecursive(const char *path)
         }
         f_closedir(&dir);
         rmdir(path);
-        return true;
-    }
+            return true;
+        }
     else
     {
         return (remove(path) == 0);
@@ -229,7 +257,13 @@ void SDWebServer::initRoutes()
         vpath = String(SD_MOUNT_WEB) + (relPath.startsWith("/") ? "" : "/") + relPath;
     }
 
-    Serial.printf("Delete file: %s -> %s\n", relPath.c_str(), vpath.c_str());
+    Serial.printf("Delete requested: %s -> %s\n", relPath.c_str(), vpath.c_str());
+
+    // Prevent deleting the root mount
+    if (vpath.equals(String(SD_MOUNT_WEB)) || vpath.equals(String(SD_MOUNT_WEB) + "/")) {
+        request->send(403, "text/plain", "cannot delete root folder");
+        return;
+    }
 
     struct stat st;
     if (stat(vpath.c_str(), &st) != 0) {
