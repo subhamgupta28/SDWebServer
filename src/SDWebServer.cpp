@@ -135,28 +135,35 @@ String SDWebServer::listFilesRecursive(const String &fatDir, const String &vfsDi
 bool SDWebServer::deleteRecursive(const char *path)
 {
     struct stat st;
-    if (stat(path, &st) != 0) {
+    if (stat(path, &st) != 0)
+    {
         return false; // not found
     }
 
-    if (S_ISDIR(st.st_mode)) {
+    if (S_ISDIR(st.st_mode))
+    {
         DIR *dir = opendir(path);
-        if (!dir) return false;
+        if (!dir)
+            return false;
 
         struct dirent *de;
-        while ((de = readdir(dir)) != NULL) {
+        while ((de = readdir(dir)) != NULL)
+        {
             if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
                 continue;
 
             String childPath = String(path) + "/" + de->d_name;
-            if (!deleteRecursive(childPath.c_str())) {
+            if (!deleteRecursive(childPath.c_str()))
+            {
                 closedir(dir);
                 return false;
             }
         }
         closedir(dir);
         return (rmdir(path) == 0);
-    } else {
+    }
+    else
+    {
         return (remove(path) == 0);
     }
 }
@@ -184,8 +191,8 @@ bool SDWebServer::deleteRecursiveOld(const char *path)
         }
         f_closedir(&dir);
         rmdir(path);
-            return true;
-        }
+        return true;
+    }
     else
     {
         return (remove(path) == 0);
@@ -285,62 +292,58 @@ void SDWebServer::initRoutes()
         request->send(500, "text/plain", "delete failed"); });
     // Upload
     server->on(
-        "/upload", HTTP_POST,
-        [](AsyncWebServerRequest *request)
-        {
-            request->send(200, "text/plain", "upload ok");
-        },
-        [this](AsyncWebServerRequest *request, String filename, size_t index,
-               uint8_t *data, size_t len, bool final)
-        {
-            FILE *&f = (FILE *&)request->_tempObject; // attach file handle to request
+    "/upload", HTTP_POST,
+    [](AsyncWebServerRequest *request) {
+        request->send(200, "text/plain", "upload ok");
+    },
+    [this](AsyncWebServerRequest *request, String filename, size_t index,
+           uint8_t *data, size_t len, bool final)
+    {
+        FILE *&f = (FILE *&)request->_tempObject;
 
-            if (index == 0)
-            {
-                // first chunk
-                String dir = "/";
-                if (request->hasParam("dir", true))
-                {
-                    dir = request->getParam("dir", true)->value(); // e.g. "/sdcard" or "/sdcard/sub"
-                }
-
-                // ✅ Remove duplicate mount point if present
-                if (dir.startsWith(SD_MOUNT_WEB))
-                {
-                    dir = dir.substring(strlen(SD_MOUNT_WEB));
-                }
-                if (!dir.startsWith("/"))
-                    dir = "/" + dir;
-
-                // Build final absolute VFS path
-                String vpath = String(SD_MOUNT_WEB) + dir + "/" + filename;
-
-                Serial.printf("Upload start: %s -> %s\n", filename.c_str(), vpath.c_str());
-
-                f = fopen(vpath.c_str(), "wb");
-                if (!f)
-                {
-                    Serial.printf("!! fopen failed at path: %s\n", vpath.c_str());
-                    return;
-                }
+        if (index == 0) {
+            // --- Get "dir" field from POST ---
+            String dir = "/";
+            const AsyncWebParameter *p = request->getParam("dir", true, false);
+            if (p) {
+                dir = p->value();  // e.g. "/sdcard/pic"
             }
 
-            if (f && len)
-            {
-                fwrite(data, 1, len, f);
+            // --- Normalize ---
+            if (dir == "/" || dir.length() == 0) {
+                dir = "";
+            } else if (!dir.startsWith("/")) {
+                dir = "/" + dir;
             }
 
-            if (final)
-            {
-                if (f)
-                {
-                    fclose(f);
-                    f = nullptr;
-                }
-                Serial.printf("Upload complete: %s (%u bytes)\n",
-                              filename.c_str(), (unsigned)(index + len));
+            // --- Final absolute path ---
+            String vpath = String(SD_MOUNT_WEB) + dir + "/" + filename;
+
+            Serial.printf("Upload start: %s -> %s\n",
+                          filename.c_str(), vpath.c_str());
+
+            f = fopen(vpath.c_str(), "wb");
+            if (!f) {
+                Serial.printf("!! fopen failed at path: %s\n", vpath.c_str());
+                return;
             }
-        });
+        }
+
+        if (f && len) {
+            fwrite(data, 1, len, f);
+        }
+
+        if (final) {
+            if (f) {
+                fclose(f);
+                f = nullptr;
+            }
+            Serial.printf("Upload complete: %s (%u bytes)\n",
+                          filename.c_str(), (unsigned)(index + len));
+        }
+    });
+
+
 
     // Make directory
     server->on("/mkdir", HTTP_POST, [this](AsyncWebServerRequest *request)
@@ -357,9 +360,40 @@ void SDWebServer::initRoutes()
 
         String vpath = joinPath(SD_MOUNT_WEB, joinPath(parent, name));
         int rc = mkdir(vpath.c_str(), 0777);
+        Serial.println(vpath);
 
         if (rc == 0)
             request->send(200, "text/plain", "mkdir ok");
         else
             request->send(500, "text/plain", "mkdir failed"); });
+    server->on("/delete-multi", HTTP_POST, [this](AsyncWebServerRequest *request)
+               {
+    if (request->contentType() != "application/json") {
+        request->send(400, "text/plain", "expected json");
+        return;
+    } }, NULL, [this](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
+               {
+    static String body;
+    if (index == 0) body = "";
+    body += String((const char*)data).substring(0, len);
+    if (index + len == total) {
+        // parse JSON manually (simple format)
+        DynamicJsonDocument doc(2048);
+        if (deserializeJson(doc, body) != DeserializationError::Ok) {
+            request->send(400, "text/plain", "bad json");
+            return;
+        }
+
+        JsonArray arr = doc["files"].as<JsonArray>();
+        int success = 0;
+        for (JsonVariant v : arr) {
+            String vpath = v.as<String>();
+            if (vpath.startsWith(SD_MOUNT_WEB)) {
+                if (deleteRecursive(vpath.c_str())) success++;
+            }
+        }
+
+        String msg = "Deleted " + String(success) + " / " + String(arr.size()) + " items";
+        request->send(200, "text/plain", msg);
+    } });
 }

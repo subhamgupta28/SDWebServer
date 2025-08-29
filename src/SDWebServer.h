@@ -9,11 +9,11 @@
 #include <sys/stat.h> // mkdir
 #include <stdio.h>
 #include <string.h>
+#include <ArduinoJson.h>
 #define SD_MOUNT_WEB "/sdcard"
 #define FAT_ROOT_WEB "0:/"
 
-
-    const char index_html_app[] PROGMEM = R"HTML(
+const char index_html_app[] PROGMEM = R"HTML(
 <!DOCTYPE html>
 <html>
 <head>
@@ -37,7 +37,8 @@
   <div class="row">
     <form id="uploadForm" method="POST" action="/upload" enctype="multipart/form-data">
       <input type="file" name="upload" multiple required>
-      <select id="folderSelect" name="dir" class="mono"></select>
+      <select id="folderSelect" class="mono"></select>
+      <input type="hidden" id="dirHidden" name="dir" value="/">
       <input type="submit" value="Upload">
     </form>
 
@@ -49,6 +50,7 @@
   </div>
 
   <h3>Files & Folders</h3>
+  <button id="deleteSelectedBtn">Delete Selected</button>
   <div id="filelist"></div>
 
   <script>
@@ -69,10 +71,11 @@
       collectFolders(data, folders); // array of {name, path, depth}
       const sel1 = document.getElementById('folderSelect');
       const sel2 = document.getElementById('mkdirParent');
+      const dirHidden = document.getElementById('dirHidden');
       sel1.innerHTML = "";
       sel2.innerHTML = "";
       folders.forEach(f => {
-        const label = " ".repeat(f.depth*2) + (f.path === "/sdcard" ? "/" : f.name + "/");
+        const label = " ".repeat(f.depth*2) + (f.path === "/" ? "/" : f.name + "/");
         const opt1 = document.createElement('option');
         opt1.value = f.path;
         opt1.textContent = label;
@@ -82,12 +85,17 @@
         opt2.textContent = label;
         sel2.appendChild(opt2);
       });
+
+      // ✅ sync hidden input with folderSelect
+      sel1.addEventListener("change", () => {
+        dirHidden.value = sel1.value;
+      });
+      dirHidden.value = sel1.value;
     }
 
     function collectFolders(items, out, depth=0) {
-      // ensure root exists in list (when called first time)
       if (depth === 0) {
-        out.push({name:"/", path:"/sdcard", depth:0});
+        out.push({name:"/", path:"/", depth:0});
       }
       items.forEach(it => {
         if (it.type === "dir") {
@@ -103,6 +111,10 @@
       const ul = document.createElement('ul');
       items.forEach(item => {
         const li = document.createElement('li');
+        const checkbox = document.createElement('input');
+        checkbox.type = "checkbox";
+        checkbox.value = item.path;
+        li.prepend(checkbox);
         if (item.type === "dir") {
           const span = document.createElement('span');
           span.className = "folder";
@@ -113,7 +125,6 @@
           };
           li.appendChild(span);
 
-          // 🆕 Delete button for folders
           const btn = document.createElement('button');
           btn.textContent = "Delete";
           btn.onclick = async (e) => {
@@ -128,7 +139,7 @@
 
           if (item.children && item.children.length) {
             const child = renderTree(item.children);
-            child.classList.add('hidden'); // collapsed by default
+            child.classList.add('hidden');
             li.appendChild(child);
           }
         } else {
@@ -154,10 +165,7 @@
       return ul;
     }
 
-    // refresh on successful forms
     document.getElementById('uploadForm').addEventListener('submit', async (e) => {
-      // let normal form post happen; page will not reload because server returns text
-      // after a short wait, refresh listing
       setTimeout(loadAll, 500);
     });
 
@@ -171,34 +179,53 @@
       form.reset();
     });
 
+    document.getElementById('deleteSelectedBtn').addEventListener('click', async () => {
+      const checked = Array.from(document.querySelectorAll('#filelist input[type=checkbox]:checked'))
+                          .map(cb => cb.value);
+      if (checked.length === 0) {
+        alert("No files selected");
+        return;
+      }
+      if (!confirm("Delete " + checked.length + " items?")) return;
+
+      const r = await fetch('/delete-multi', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files: checked })
+      });
+
+      if (!r.ok) {
+        alert("Delete failed");
+      }
+      await loadAll();
+    });
+
     loadAll();
   </script>
 </body>
 </html>
 )HTML";
 
-
-
 class SDWebServer
 {
 public:
-    // Constructor: create own server
-    SDWebServer(int port = 80);
+  // Constructor: create own server
+  SDWebServer(int port = 80);
 
-    // Constructor: reuse existing server
-    SDWebServer(AsyncWebServer &existingServer);
+  // Constructor: reuse existing server
+  SDWebServer(AsyncWebServer &existingServer);
 
-    ~SDWebServer();
+  ~SDWebServer();
 
-    bool begin();
+  bool begin();
 
 private:
-    AsyncWebServer *server; // always use pointer internally
-    bool ownsServer;
-    sdmmc_card_t *card = NULL;
-    void initSD();
-    void initRoutes();
-    String listFilesRecursive(const String &fatDir, const String &vfsDir, uint8_t levels);
-    bool deleteRecursive(const char *path);
-    bool deleteRecursiveOld(const char *path);
+  AsyncWebServer *server; // always use pointer internally
+  bool ownsServer;
+  sdmmc_card_t *card = NULL;
+  void initSD();
+  void initRoutes();
+  String listFilesRecursive(const String &fatDir, const String &vfsDir, uint8_t levels);
+  bool deleteRecursive(const char *path);
+  bool deleteRecursiveOld(const char *path);
 };
